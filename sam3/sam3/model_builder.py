@@ -607,10 +607,19 @@ def _load_checkpoint(model, checkpoint_path):
 
         cleaned_ckpt[new_k] = v
         
+    # LiteText checkpoints may be saved with an already-truncated positional
+    # embedding (e.g. ctx32). Truncate the model to match before loading.
+    pe_key = "backbone.language_backbone.encoder.positional_embedding.pos_embed.pos_embed"
+    lang_backbone = getattr(getattr(model, "backbone", None), "language_backbone", None)
+    if pe_key in cleaned_ckpt and hasattr(lang_backbone, "set_context_length"):
+        ckpt_len = cleaned_ckpt[pe_key].shape[2]
+        if ckpt_len != lang_backbone.context_length:
+            lang_backbone.set_context_length(ckpt_len)
+
     sam3_image_ckpt = {
         k: v for k, v in cleaned_ckpt.items() if k in model.state_dict()
     }
-    
+
     # Handle tracker/instance predictor if enabled
     if getattr(model, "inst_interactive_predictor", None) is not None:
         tracker_prefix = "inst_interactive_predictor.model."
@@ -1200,6 +1209,14 @@ def build_sam3_video_model(
                 new_k = k.replace("student_trunk.", "")
                 cleaned[new_k] = v
 
+            # Checkpoints may be saved with an already-truncated positional
+            # embedding (e.g. ctx32). Truncate the model to match before loading.
+            pe_key = "detector.backbone.language_backbone.encoder.positional_embedding.pos_embed.pos_embed"
+            if pe_key in cleaned:
+                ckpt_len = cleaned[pe_key].shape[2]
+                if ckpt_len != student_text_enc.context_length:
+                    student_text_enc.set_context_length(ckpt_len)
+
             missing_keys, unexpected_keys = model.load_state_dict(cleaned, strict=False)
             if missing_keys:
                 print(f"Missing keys: {missing_keys}")
@@ -1276,11 +1293,18 @@ def build_efficientsam3_video_model(
     text_encoder_type: Optional[str] = None,
     text_encoder_context_length: int = 77,
     enable_inst_interactivity: bool = True,
+    tracker_checkpoint_path: Optional[str] = None,
 ) -> Sam3VideoInferenceWithInstanceInteractivity:
     """Build EfficientSAM3 video model (main-branch implementation).
 
     This variant swaps the default SAM3 vision backbone with a student backbone
     (EfficientViT/RepViT/TinyViT) while keeping the same detector+tracker wrapper.
+
+    tracker_checkpoint_path: optional SAM3 / LiteText video checkpoint used to fill
+        in tracker weights (and the tracker neck branch `sam2_convs`) that are
+        missing from `checkpoint_path`, e.g. for image-only EfficientSAM3
+        checkpoints. The student trunk is distilled to mimic the SAM3 trunk, so
+        the SAM3 tracker branch can run on top of it.
     """
     if bpe_path is None:
         bpe_path = os.path.join(
@@ -1381,13 +1405,38 @@ def build_efficientsam3_video_model(
         ) and any(k.startswith("backbone.") for k in cleaned_ckpt.keys()):
             cleaned_ckpt = {f"detector.{k}": v for k, v in cleaned_ckpt.items()}
 
+        # Checkpoints may be saved with an already-truncated positional
+        # embedding (e.g. ctx16). Truncate the model to match before loading.
+        pe_key = "detector.backbone.language_backbone.encoder.positional_embedding.pos_embed.pos_embed"
+        lang_backbone = model.detector.backbone.language_backbone
+        if pe_key in cleaned_ckpt and hasattr(lang_backbone, "set_context_length"):
+            ckpt_len = cleaned_ckpt[pe_key].shape[2]
+            if ckpt_len != lang_backbone.context_length:
+                lang_backbone.set_context_length(ckpt_len)
+
+        if tracker_checkpoint_path is not None:
+            # mmap: only the tracker tensors are actually read from disk
+            donor = torch.load(
+                tracker_checkpoint_path, map_location="cpu", weights_only=True, mmap=True
+            )
+            donor = donor.get("model", donor)
+            tracker_prefixes = ("tracker.", "detector.backbone.vision_backbone.sam2_convs.")
+            filled = {
+                k: v for k, v in donor.items()
+                if k.startswith(tracker_prefixes) and k not in cleaned_ckpt
+            }
+            if not filled:
+                raise ValueError(f"No tracker weights found in {tracker_checkpoint_path}")
+            print(f"Loaded {len(filled)} tracker tensors from {tracker_checkpoint_path}")
+            cleaned_ckpt.update(filled)
+
         missing_keys, unexpected_keys = model.load_state_dict(
             cleaned_ckpt, strict=strict_state_dict_loading
         )
         if missing_keys:
-            print(f"Missing keys: {missing_keys[:10]}")
+            print(f"Missing keys ({len(missing_keys)}): {missing_keys[:10]}")
         if unexpected_keys:
-            print(f"Unexpected keys: {unexpected_keys[:10]}")
+            print(f"Unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:10]}")
 
     # Truncate text encoder context length after checkpoint loading
     if text_encoder_type and text_encoder_context_length < 77:

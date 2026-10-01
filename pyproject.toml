@@ -7,7 +7,7 @@ name = "efficientsam3"
 version = "0.1.0"
 description = "EfficientSAM3 research utilities and Stage-1 distillation pipeline"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "Chengxi Simon Zeng"},
@@ -31,12 +31,11 @@ dependencies = [
 stage1 = [
     "torch>=2.7.0",
     "torchvision>=0.18.0",
-    "decord>=0.6.0",
     "mmengine>=0.10.4",
     "pycocotools>=2.0.7",
     "yacs>=0.1.8",
     "Pillow>=10.0.0",
-    "opencv-python>=4.9.0.80",
+    "opencv-python-headless>=4.9.0.80",
     "scipy>=1.10.0",
     "scikit-image>=0.21.0",
     "scikit-learn>=1.3.0",
@@ -46,7 +45,6 @@ stage1 = [
     "submitit>=1.5.1",
     "fvcore>=0.1.5.post20221221",
     "fairscale>=0.4.13",
-    "mmcv>=2.1.0",
     "pyyaml>=6.0.1",
     # PyPI name: segment-anything, import name: segment_anything
     # Used by some SAM1-compat utilities (e.g. EfficientViT SAM wrapper).
